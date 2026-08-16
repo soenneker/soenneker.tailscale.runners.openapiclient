@@ -17,6 +17,7 @@ using Soenneker.OpenApi.Fixer.Abstract;
 using Soenneker.Utils.Directory.Abstract;
 using Soenneker.Utils.File.Abstract;
 using Soenneker.Utils.File.Download.Abstract;
+using Soenneker.Utils.Yaml.Abstract;
 using System.Collections.Generic;
 
 namespace Soenneker.Tailscale.Runners.OpenApiClient.Utils;
@@ -33,9 +34,11 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
     private readonly IFileDownloadUtil _fileDownloadUtil;
     private readonly IFileUtil _fileUtil;
     private readonly IDirectoryUtil _directoryUtil;
+    private readonly IYamlUtil _yamlUtil;
 
     public FileOperationsUtil(ILogger<FileOperationsUtil> logger, IConfiguration configuration, IGitUtil gitUtil, IDotnetUtil dotnetUtil,
-        IFileDownloadUtil fileDownloadUtil, IFileUtil fileUtil, IDirectoryUtil directoryUtil, IKiotaUtil kiotaUtil, IOpenApiFixer openApiFixer)
+        IFileDownloadUtil fileDownloadUtil, IFileUtil fileUtil, IDirectoryUtil directoryUtil, IKiotaUtil kiotaUtil, IOpenApiFixer openApiFixer,
+        IYamlUtil yamlUtil)
     {
         _logger = logger;
         _configuration = configuration;
@@ -46,27 +49,32 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
         _fileDownloadUtil = fileDownloadUtil;
         _fileUtil = fileUtil;
         _directoryUtil = directoryUtil;
+        _yamlUtil = yamlUtil;
     }
 
     public async ValueTask Process(CancellationToken cancellationToken = default)
     {
         string gitDirectory = await _gitUtil.CloneToTempDirectory($"https://github.com/soenneker/{Constants.Library.ToLowerInvariantFast()}", cancellationToken: cancellationToken);
 
-        string targetFilePath = Path.Combine(gitDirectory, "openapi.json");
+        string yamlFilePath = Path.Combine(gitDirectory, "openapi.yaml");
 
-        await _fileUtil.DeleteIfExists(targetFilePath, cancellationToken: cancellationToken);
+        await _fileUtil.DeleteIfExists(yamlFilePath, cancellationToken: cancellationToken);
 
         string openApiDocumentUrl = _configuration["Tailscale:ClientGenerationUrl"] ?? "https://api.tailscale.com/api/v2?outputOpenapiSchema=true";
 
         string? filePath = await _fileDownloadUtil.Download(openApiDocumentUrl,
-            targetFilePath, fileExtension: ".json", cancellationToken: cancellationToken);
+            yamlFilePath, fileExtension: ".yaml", cancellationToken: cancellationToken);
 
         if (filePath == null)
             throw new InvalidOperationException("Tailscale OpenAPI document download failed.");
 
+        string targetFilePath = Path.Combine(gitDirectory, "openapi.json");
+        await _fileUtil.DeleteIfExists(targetFilePath, cancellationToken: cancellationToken);
+        await _yamlUtil.SaveAsJson(yamlFilePath, targetFilePath, cancellationToken: cancellationToken);
+
         string fixedFilePath = Path.Combine(gitDirectory, "openapi.fixed.json");
         await _fileUtil.DeleteIfExists(fixedFilePath, cancellationToken: cancellationToken);
-        await _openApiFixer.Fix(filePath, fixedFilePath, cancellationToken).NoSync();
+        await _openApiFixer.Fix(targetFilePath, fixedFilePath, cancellationToken).NoSync();
 
         await _kiotaUtil.EnsureInstalled(cancellationToken);
 
